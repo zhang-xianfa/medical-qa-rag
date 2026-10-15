@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── 全局过渡 ── */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* ── 消息入场动画 ── */
+.msg-enter-active {
+  animation: msgIn 0.3s ease-out;
+}
+
+/* ── 自定义滚动条 ── */
+.chat-scroll::-webkit-scrollbar {
+  display: none;
+}
+.chat-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+/* ── 思考指示器 ── */
+.thinking-dots::after {
+  content: '';
+  animation: thinkingDots 1.4s steps(4, end) infinite;
+}
+@keyframes thinkingDots {
+  0%   { content: ''; }
+  25%  { content: '.'; }
+  50%  { content: '..'; }
+  75%  { content: '...'; }
+  100% { content: ''; }
+}
+
+/* ── 诊断报告微样式（TailwindCSS 覆盖不到的细节） ── */
+.report-card h3 {
+  font-family: "STSong", "Songti SC", serif;
+}
+
+/* ── 选项卡片交互 ── */
+.choice-card {
+  transition: all 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.choice-card:hover .choice-letter-bg {
+  background-color: #8b6b9e;
+  color: #fff;
+}
+.choice-card.selected {
+  background-color: #f3eef8;
+  border-color: #8b6b9e;
+  color: #5a3e6b;
+  font-weight: 500;
+}

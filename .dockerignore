@@ -1,0 +1,10 @@
+.env
+.git
+.gitignore
+__pycache__
+*.pyc
+.idea
+node_modules
+dist
+.pytest_cache
+*.egg-info

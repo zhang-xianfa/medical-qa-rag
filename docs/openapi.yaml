@@ -1,0 +1,1310 @@
+openapi: "3.0.3"
+info:
+  title: "医疗智能问答系统 API"
+  description: |
+    # 医疗智能问答系统 RESTful API
+
+    基于 Master-Agent 多智能体协作架构的医疗健康咨询系统。
+
+    ## 核心特性
+    - 多轮结构化问诊（InterviewAgent）
+    - 异步循证知识检索（SearchAgent）
+    - LLM综合推理诊断（DiagnosisAgent）
+    - SSE流式事件推送
+    - 红旗症状紧急中断
+
+    ## 安全红线
+    - 所有诊断输出含不确定性表达，**禁止AI确诊**
+    - 红旗症状触发立即返回急救指引，**禁止继续问诊**
+    - 用户PII信息在API入口层脱敏
+
+    ## 免责声明
+    本API返回的所有健康建议仅供参考，不能替代专业医疗诊断。
+
+    ## 认证
+    初期可选 `X-API-Key` 头部认证，生产环境必填。
+
+  version: "1.0.0"
+  contact:
+    name: "开发团队"
+    email: "dev@medical-qa.local"
+
+servers:
+  - url: "http://localhost:8000/api/v1"
+    description: "本地开发环境"
+  - url: "https://medical-qa-staging.example.com/api/v1"
+    description: "测试环境"
+  - url: "https://medical-qa.example.com/api/v1"
+    description: "生产环境"
+
+tags:
+  - name: Sessions
+    description: "会话生命周期管理"
+  - name: Messages
+    description: "对话消息与问诊交互"
+  - name: Streaming
+    description: "SSE流式事件推送"
+  - name: Diagnosis
+    description: "诊断结果查询"
+  - name: Safety
+    description: "安全事件与红旗管理"
+  - name: Knowledge
+    description: "知识库检索"
+  - name: Health
+    description: "服务健康检查"
+
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: "API密钥（初期可选，生产环境必填）"
+
+  schemas:
+    # ============================================================
+    # 通用 Schemas
+    # ============================================================
+
+    ErrorResponse:
+      type: object
+      required: [error, code, message]
+      properties:
+        error:
+          type: string
+          description: "机器可读的错误码"
+          example: "SESSION_NOT_FOUND"
+        code:
+          type: integer
+          description: "HTTP状态码"
+          example: 404
+        message:
+          type: string
+          description: "人类可读的错误描述"
+          example: "会话不存在或已被删除"
+        details:
+          type: object
+          description: "附加错误详情"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-06-19T10:30:00.000Z"
+
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+          description: "总记录数"
+          example: 150
+        limit:
+          type: integer
+          description: "每页条数"
+          example: 20
+        offset:
+          type: integer
+          description: "偏移量"
+          example: 0
+        has_more:
+          type: boolean
+          description: "是否有更多数据"
+          example: true
+
+    # ============================================================
+    # 会话 Schemas
+    # ============================================================
+
+    SessionStatus:
+      type: string
+      enum: [active, paused, completed, emergency_terminated, closed_timeout]
+
+    SessionIntent:
+      type: string
+      enum: [diagnosis, question, emergency, greeting, status, follow_up]
+
+    WorkflowStage:
+      type: string
+      enum: [init, collect, diagnose, done, emergency]
+
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        user_id:
+          type: string
+          description: "用户标识（前端哈希匿名化）"
+          example: "anon_7f3a9b2c"
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        intent:
+          $ref: "#/components/schemas/SessionIntent"
+        current_stage:
+          $ref: "#/components/schemas/WorkflowStage"
+        red_flag_raised:
+          type: boolean
+          example: false
+        round_count:
+          type: integer
+          minimum: 0
+          example: 2
+        max_rounds:
+          type: integer
+          minimum: 1
+          maximum: 10
+          example: 5
+        close_reason:
+          type: string
+          nullable: true
+          enum: [completed, emergency, timeout, user_aborted]
+          example: null
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-06-19T10:30:00.000Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2026-06-19T10:32:00.000Z"
+
+    CreateSessionRequest:
+      type: object
+      required: [user_id]
+      properties:
+        user_id:
+          type: string
+          description: "用户标识（前端已哈希匿名化）"
+          example: "anon_7f3a9b2c"
+        max_rounds:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 5
+          example: 5
+        metadata:
+          type: object
+          description: "扩展元数据（客户端信息、来源渠道等）"
+          example:
+            client: "web"
+            source: "direct"
+
+    UpdateSessionRequest:
+      type: object
+      properties:
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        max_rounds:
+          type: integer
+          minimum: 1
+          maximum: 10
+
+    MedicalRecordSummary:
+      type: object
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          example: 3
+        completion_level:
+          type: string
+          enum: [partial, core_complete, full]
+          example: "partial"
+        chief_complaint:
+          type: string
+          example: "头痛"
+        duration:
+          type: string
+          example: "2天"
+        location:
+          type: string
+          example: "前额"
+        severity:
+          type: integer
+          minimum: 1
+          maximum: 10
+          example: 7
+        accompanying_symptoms:
+          type: array
+          items:
+            type: string
+          example: ["低烧", "恶心"]
+        collected_fields:
+          type: array
+          items:
+            type: string
+          description: "已采集的字段路径列表"
+          example:
+            - "patient_info.chief_complaint"
+            - "patient_info.complaint_duration"
+            - "patient_info.complaint_location"
+            - "patient_info.severity"
+            - "accompanying_symptoms"
+        missing_core_fields:
+          type: array
+          items:
+            type: string
+          description: "尚未采集的核心字段"
+          example:
+            - "past_history.chronic_diseases"
+            - "allergy_history.drug_allergies"
+
+    SessionDetail:
+      allOf:
+        - $ref: "#/components/schemas/Session"
+        - type: object
+          properties:
+            medical_record_summary:
+              $ref: "#/components/schemas/MedicalRecordSummary"
+            message_count:
+              type: integer
+              example: 8
+
+    # ============================================================
+    # 消息 Schemas
+    # ============================================================
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "m1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        session_id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        round_number:
+          type: integer
+          example: 1
+        role:
+          type: string
+          enum: [user, assistant, system]
+          example: "user"
+        content:
+          type: string
+          description: "消息文本内容"
+          example: "我头痛两天了，前额位置，大概7分痛"
+        content_type:
+          type: string
+          enum: [text, question, diagnosis_report, emergency_guide, status_report]
+          example: "text"
+        agent_source:
+          type: string
+          enum: [master, interview, search, diagnosis, emergency, system]
+          nullable: true
+          example: null
+        token_count:
+          type: integer
+          nullable: true
+          example: null
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-06-19T10:30:05.000Z"
+
+    SendMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          description: "用户输入的原始消息（API入口层自动脱敏）"
+          minLength: 1
+          maxLength: 4096
+          example: "我头痛两天了，前额位置，大概7分痛，还有点低烧"
+        content_type:
+          type: string
+          enum: [text]
+          default: "text"
+
+    SendMessageResponse:
+      type: object
+      description: "发送消息的同步响应（含当前状态快照）"
+      properties:
+        message:
+          $ref: "#/components/schemas/Message"
+        session_status:
+          $ref: "#/components/schemas/SessionStatus"
+        current_stage:
+          $ref: "#/components/schemas/WorkflowStage"
+        red_flag_raised:
+          type: boolean
+          example: false
+        round_count:
+          type: integer
+          example: 1
+        collected_fields_summary:
+          type: object
+          description: "当前已采集的核心字段摘要"
+          example:
+            chief_complaint: "头痛"
+            duration: "2天"
+            location: "前额"
+            severity: 7
+        next_action:
+          type: string
+          enum: [continue, diagnosis_ready, emergency_interrupted, completed]
+          description: |
+            客户端后续行为指引：
+            - continue: 继续问诊，连接SSE获取下一轮问题
+            - diagnosis_ready: 信息充足，连接SSE获取诊断报告
+            - emergency_interrupted: 红旗触发，会话已终止
+            - completed: 问答/诊断已完成
+          example: "continue"
+
+    # ============================================================
+    # SSE 事件 Schemas
+    # ============================================================
+
+    SSEMessageEvent:
+      type: object
+      required: [type, role, content]
+      properties:
+        type:
+          type: string
+          enum: [message]
+          example: "message"
+        role:
+          type: string
+          enum: [assistant, system]
+          example: "assistant"
+        content:
+          type: string
+          description: "消息文本（支持流式增量拼接）"
+          example: "您的头痛持续多久了？具体在哪个位置？"
+        content_type:
+          type: string
+          enum: [text, question, diagnosis_report, emergency_guide, status_report]
+          example: "question"
+        agent_source:
+          type: string
+          enum: [master, interview, search, diagnosis, emergency]
+          example: "interview"
+        round_number:
+          type: integer
+          example: 1
+
+    SSEDiagnosisProgressEvent:
+      type: object
+      required: [type, stage, progress]
+      properties:
+        type:
+          type: string
+          enum: [diagnosis_progress]
+          example: "diagnosis_progress"
+        stage:
+          type: string
+          enum: [evidence_matching, differential_gen, risk_assessment, recommendation, schema_validate]
+          description: "当前诊断子阶段"
+          example: "evidence_matching"
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: "诊断进度百分比"
+          example: 20
+        stage_description:
+          type: string
+          description: "中文阶段描述"
+          example: "正在匹配医学证据..."
+
+    SSEDiagnosisCompleteEvent:
+      type: object
+      required: [type, result]
+      properties:
+        type:
+          type: string
+          enum: [diagnosis_complete]
+          example: "diagnosis_complete"
+        result:
+          $ref: "#/components/schemas/DiagnosisReport"
+
+    SSEEmergencyEvent:
+      type: object
+      required: [type, action, guidance, red_flags]
+      properties:
+        type:
+          type: string
+          enum: [emergency]
+          example: "emergency"
+        action:
+          type: string
+          enum: [call_120, immediate_er, urgent_appointment]
+          description: "建议的紧急行动"
+          example: "call_120"
+        guidance:
+          type: string
+          description: "急救指引文本"
+          example: "您描述的症状可能提示急性心肌梗死，请立即拨打120急救电话..."
+        red_flags:
+          type: array
+          items:
+            type: string
+          description: "触发的红旗症状关键词"
+          example: ["胸痛", "呼吸困难", "左臂麻木"]
+        disclaimer:
+          type: string
+          example: "本系统为AI辅助工具，此急救指引为自动触发。请立即拨打120寻求专业急救。"
+
+    SSEErrorEvent:
+      type: object
+      required: [type, code, message]
+      properties:
+        type:
+          type: string
+          enum: [error]
+          example: "error"
+        code:
+          type: string
+          description: "错误码"
+          example: "LLM_TIMEOUT"
+        message:
+          type: string
+          description: "错误描述"
+          example: "AI服务响应超时，正在重试..."
+
+    SSEHeartbeatEvent:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [heartbeat]
+          example: "heartbeat"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-06-19T10:30:15.000Z"
+
+    # ============================================================
+    # 诊断 Schemas
+    # ============================================================
+
+    DiagnosisReference:
+      type: object
+      properties:
+        knowledge_entry_id:
+          type: string
+          format: uuid
+          description: "知识库条目ID（循证追溯）"
+          example: "ke-a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        title:
+          type: string
+          example: "紧张性头痛诊疗指南"
+        source:
+          type: string
+          example: "中华医学会神经病学分会"
+        year:
+          type: integer
+          example: 2023
+        url:
+          type: string
+          nullable: true
+          example: null
+        relevance_score:
+          type: number
+          minimum: 0
+          maximum: 1
+          example: 0.92
+
+    DiagnosisReport:
+      type: object
+      required:
+        - primary_diagnosis
+        - differential_diagnosis
+        - risk_assessment
+        - recommendations
+        - red_flags
+        - references
+        - disclaimer
+      properties:
+        primary_diagnosis:
+          type: object
+          required: [name, probability, rationale, certainty_level]
+          properties:
+            name:
+              type: string
+              description: "最可能的诊断名称"
+              example: "紧张性头痛"
+            probability:
+              type: string
+              description: "可能性百分比"
+              example: "60%"
+            rationale:
+              type: string
+              description: "推理依据"
+              example: "前额压迫性头痛+工作压力诱因+无神经系统阳性体征，倾向于考虑紧张性头痛"
+            certainty_level:
+              type: string
+              enum: [low, medium, high]
+              example: "medium"
+        differential_diagnosis:
+          type: array
+          items:
+            type: object
+            required: [name, probability, key_evidence]
+            properties:
+              name:
+                type: string
+                example: "偏头痛"
+              probability:
+                type: string
+                example: "30%"
+              key_evidence:
+                type: string
+                example: "中度疼痛+恶心"
+              exclusion_criteria:
+                type: string
+                example: "无搏动性特征+无视觉先兆"
+        risk_assessment:
+          type: object
+          required: [severity, urgency]
+          properties:
+            severity:
+              type: string
+              enum: ["轻度", "中度", "重度", "危及生命"]
+              example: "中度"
+            urgency:
+              type: string
+              enum: ["可居家观察", "建议门诊", "尽快就医", "立即急诊"]
+              example: "建议门诊"
+            warning_signs:
+              type: array
+              items:
+                type: string
+              example: ["体温超过38.5℃", "剧烈呕吐", "颈部僵硬"]
+        recommendations:
+          type: array
+          items:
+            type: object
+            required: [category, content, priority]
+            properties:
+              category:
+                type: string
+                enum: ["居家护理", "用药建议", "就医建议", "生活方式", "监测建议"]
+                example: "居家护理"
+              content:
+                type: string
+                example: "适当休息，避免强光和噪音刺激"
+              priority:
+                type: integer
+                minimum: 1
+                maximum: 5
+                example: 1
+        red_flags:
+          type: array
+          items:
+            type: object
+            required: [symptom, action]
+            properties:
+              symptom:
+                type: string
+                example: "体温超过38.5℃伴剧烈头痛"
+              action:
+                type: string
+                example: "立即急诊就医"
+        references:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiagnosisReference"
+        disclaimer:
+          type: string
+          description: "固定免责声明"
+          example: "本内容仅供参考，不能替代专业医疗诊断。如有不适，请及时就医。"
+
+    DiagnosisResponse:
+      type: object
+      properties:
+        session_id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        status:
+          type: string
+          enum: [not_available, in_progress, completed, emergency_interrupted]
+          description: |
+            诊断状态：
+            - not_available: 会话非诊断意图
+            - in_progress: 诊断进行中（建议连接SSE）
+            - completed: 诊断已完成
+            - emergency_interrupted: 红旗中断
+          example: "completed"
+        result:
+          $ref: "#/components/schemas/DiagnosisReport"
+        schema_version:
+          type: string
+          example: "1.0"
+        schema_validated:
+          type: boolean
+          example: true
+        fallback_triggered:
+          type: boolean
+          example: false
+        citation_count:
+          type: integer
+          example: 3
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-06-19T10:36:00.000Z"
+
+    # ============================================================
+    # 安全事件 Schemas
+    # ============================================================
+
+    SafetyEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "se-a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        session_id:
+          type: string
+          format: uuid
+        event_category:
+          type: string
+          enum: [red_flag, pii_detected, content_filtered, fallback, schema_rejected]
+          example: "red_flag"
+        severity:
+          type: string
+          enum: [info, warning, critical]
+          example: "critical"
+        description:
+          type: string
+          example: "检测到红旗关键词: 胸痛、呼吸困难"
+        context_data:
+          type: object
+          description: "事件上下文（已脱敏）"
+          example:
+            triggered_keywords: ["胸痛", "呼吸困难"]
+            detection_stage: "input"
+        action_taken:
+          type: string
+          example: "立即中断Agent链，返回急救指引，会话标记为emergency_terminated"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-06-19T10:31:00.000Z"
+
+    SafetyEventsResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SafetyEvent"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+        summary:
+          type: object
+          properties:
+            total_events:
+              type: integer
+              example: 5
+            red_flag_count:
+              type: integer
+              example: 1
+            pii_detection_count:
+              type: integer
+              example: 2
+
+    # ============================================================
+    # 知识库 Schemas
+    # ============================================================
+
+    KnowledgeSearchResult:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "ke-a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        title:
+          type: string
+          example: "紧张性头痛诊疗指南（2023版）"
+        source:
+          type: string
+          example: "中华医学会神经病学分会"
+        source_type:
+          type: string
+          enum: [guideline, consensus, textbook, review, case_report]
+          example: "guideline"
+        publish_year:
+          type: integer
+          example: 2023
+        content_excerpt:
+          type: string
+          description: "匹配到的知识片段摘要"
+          example: "紧张性头痛的诊断标准包括：双侧压迫性/紧缩性头痛..."
+        relevance_score:
+          type: number
+          minimum: 0
+          maximum: 1
+          example: 0.92
+        authority_score:
+          type: number
+          minimum: 0
+          maximum: 1
+          example: 0.9
+
+    KnowledgeSearchResponse:
+      type: object
+      properties:
+        query:
+          type: string
+          example: "紧张性头痛的诊断标准"
+        rewritten_query:
+          type: string
+          description: "术语标准化改写后的查询词"
+          example: "紧张性头痛 诊断标准 临床指南"
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeSearchResult"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    # ============================================================
+    # 健康检查 Schemas
+    # ============================================================
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          example: "healthy"
+        version:
+          type: string
+          example: "1.0.0"
+        components:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [up, down]
+              example: "up"
+            vector_store:
+              type: string
+              enum: [up, down, not_configured]
+              example: "up"
+              example: "up"
+            llm:
+              type: string
+              enum: [up, down]
+              example: "up"
+        uptime_seconds:
+          type: integer
+          example: 86400
+
+  # ============================================================
+  # 请求参数
+  # ============================================================
+  parameters:
+    SessionIdParam:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: "会话ID"
+
+    PaginationLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: "每页返回条数"
+
+    PaginationOffset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      description: "偏移量（0-based）"
+
+  # ============================================================
+  # 通用响应
+  # ============================================================
+  responses:
+    400BadRequest:
+      description: "请求参数无效"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "VALIDATION_ERROR"
+            code: 400
+            message: "content字段为必填项且长度1-4096字符"
+            timestamp: "2026-06-19T10:30:00.000Z"
+
+    401Unauthorized:
+      description: "未认证"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "UNAUTHORIZED"
+            code: 401
+            message: "API密钥无效或已过期"
+            timestamp: "2026-06-19T10:30:00.000Z"
+
+    404NotFound:
+      description: "资源不存在"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "SESSION_NOT_FOUND"
+            code: 404
+            message: "会话不存在或已被删除"
+            timestamp: "2026-06-19T10:30:00.000Z"
+
+    409Conflict:
+      description: "状态冲突"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "SESSION_TERMINATED"
+            code: 409
+            message: "会话已紧急终止，无法继续操作"
+            timestamp: "2026-06-19T10:30:00.000Z"
+
+    500InternalError:
+      description: "服务器内部错误"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "INTERNAL_ERROR"
+            code: 500
+            message: "系统繁忙，请稍后重试。如持续出现请就医。"
+            timestamp: "2026-06-19T10:30:00.000Z"
+
+# ============================================================
+# API 路径定义
+# ============================================================
+paths:
+
+  # ==========================================================
+  # 健康检查
+  # ==========================================================
+  /health:
+    get:
+      tags: [Health]
+      summary: "服务健康状态"
+      description: "返回各组件连接状态和运行时长"
+      security: []
+      operationId: healthCheck
+      responses:
+        "200":
+          description: "服务状态"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  # ==========================================================
+  # 会话管理
+  # ==========================================================
+  /sessions:
+    post:
+      tags: [Sessions]
+      summary: "创建新会话"
+      description: |
+        创建一次新的问诊/问答会话。返回会话ID供后续消息交互使用。
+
+        **调用时机：** 用户首次进入系统或主动发起新咨询时。
+      operationId: createSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+            example:
+              user_id: "anon_7f3a9b2c"
+              max_rounds: 5
+              metadata:
+                client: "web"
+                source: "direct"
+      responses:
+        "201":
+          description: "会话创建成功"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/400BadRequest"
+
+    get:
+      tags: [Sessions]
+      summary: "查询会话列表"
+      description: "分页查询会话列表，可按状态和用户筛选"
+      operationId: listSessions
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/SessionStatus"
+          description: "按状态筛选"
+        - name: user_id
+          in: query
+          schema:
+            type: string
+          description: "按用户筛选"
+        - $ref: "#/components/parameters/PaginationLimit"
+        - $ref: "#/components/parameters/PaginationOffset"
+      responses:
+        "200":
+          description: "会话列表"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Session"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+
+  /sessions/{session_id}:
+    get:
+      tags: [Sessions]
+      summary: "获取会话详情"
+      description: "获取指定会话的完整信息，包含问诊进度和已采集字段摘要"
+      operationId: getSession
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      responses:
+        "200":
+          description: "会话详情"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionDetail"
+        "404":
+          $ref: "#/components/responses/404NotFound"
+
+    patch:
+      tags: [Sessions]
+      summary: "更新会话状态"
+      description: |
+        更新会话的状态或参数。
+
+        **典型场景：**
+        - 用户主动结束问诊
+        - 用户暂停会话
+        - 调整最大问诊轮次
+      operationId: updateSession
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSessionRequest"
+            examples:
+              pause:
+                summary: "暂停会话"
+                value:
+                  status: "paused"
+              complete:
+                summary: "提前结束问诊"
+                value:
+                  status: "completed"
+              adjust_rounds:
+                summary: "调整最大轮次"
+                value:
+                  max_rounds: 3
+      responses:
+        "200":
+          description: "更新后的会话"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          $ref: "#/components/responses/404NotFound"
+        "409":
+          $ref: "#/components/responses/409Conflict"
+
+    delete:
+      tags: [Sessions]
+      summary: "删除会话"
+      description: "删除指定会话及其关联的所有消息、病历、诊断数据（级联删除）"
+      operationId: deleteSession
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      responses:
+        "204":
+          description: "删除成功，无响应体"
+        "404":
+          $ref: "#/components/responses/404NotFound"
+
+  # ==========================================================
+  # 消息与对话
+  # ==========================================================
+  /sessions/{session_id}/messages:
+    post:
+      tags: [Messages]
+      summary: "发送用户消息（核心交互入口）"
+      description: |
+        向指定会话发送用户消息，触发Agent链处理。
+
+        ## 处理流程
+        1. 接收消息 → PII脱敏
+        2. 红旗关键词检测
+        3. 若触发红旗 → 返回 emergency_interrupted
+        4. 若未触发 → MasterAgent路由 → 问诊/问答/紧急
+        5. 返回同步响应 + next_action
+
+        ## next_action 客户端行为指引
+        | next_action | 含义 | 后续操作 |
+        |------------|------|---------|
+        | continue | 问诊进行中 | 连接SSE获取下一轮问题 |
+        | diagnosis_ready | 信息充足 | 连接SSE获取诊断报告 |
+        | emergency_interrupted | 红旗触发 | 会话已终止，读取emergency消息 |
+        | completed | 问答/诊断完成 | 读取消息历史获取完整回答 |
+      operationId: sendMessage
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+            examples:
+              initial_symptom:
+                summary: "初次症状描述"
+                value:
+                  content: "我头痛两天了，前额位置，大概7分痛，还有点低烧"
+                  content_type: "text"
+              follow_up:
+                summary: "追问回答"
+                value:
+                  content: "没有呕吐，对青霉素过敏"
+                  content_type: "text"
+              red_flag:
+                summary: "红旗症状（触发紧急中断）"
+                value:
+                  content: "我胸口剧痛，呼吸困难，左手臂发麻"
+                  content_type: "text"
+      responses:
+        "200":
+          description: "消息接收成功，返回处理结果快照"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendMessageResponse"
+        "400":
+          $ref: "#/components/responses/400BadRequest"
+        "404":
+          $ref: "#/components/responses/404NotFound"
+        "409":
+          $ref: "#/components/responses/409Conflict"
+
+    get:
+      tags: [Messages]
+      summary: "获取消息历史"
+      description: "分页获取指定会话的对话消息历史，按时间正序排列"
+      operationId: listMessages
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+        - name: round_number
+          in: query
+          schema:
+            type: integer
+          description: "按轮次筛选（可选）"
+        - $ref: "#/components/parameters/PaginationLimit"
+        - $ref: "#/components/parameters/PaginationOffset"
+      responses:
+        "200":
+          description: "消息列表"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Message"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+        "404":
+          $ref: "#/components/responses/404NotFound"
+
+  # ==========================================================
+  # SSE 流式事件推送
+  # ==========================================================
+  /sessions/{session_id}/stream:
+    get:
+      tags: [Streaming]
+      summary: "SSE流式事件推送"
+      description: |
+        建立 Server-Sent Events 长连接，接收该会话的实时事件流。
+
+        ## 事件类型路由表
+        | event | 触发条件 | payload Schema | 客户端行为 |
+        |-------|---------|----------------|-----------|
+        | heartbeat | 每15秒无事件 | SSEHeartbeatEvent | 忽略，保活 |
+        | message | 问诊Agent生成提问/直接回答 | SSEMessageEvent | 追加到对话界面 |
+        | diagnosis_progress | 诊断Agent开始推理 | SSEDiagnosisProgressEvent | 更新进度条 |
+        | diagnosis_complete | 诊断完成+Schema校验通过 | SSEDiagnosisCompleteEvent | 渲染报告，关闭连接 |
+        | emergency | 任意阶段红旗触发 | SSEEmergencyEvent | **展示急救指引，锁定界面** |
+        | error | 处理异常 | SSEErrorEvent | 展示错误，可重连 |
+
+        ## 客户端示例 (JavaScript)
+        ```javascript
+        const es = new EventSource(`/api/v1/sessions/${sessionId}/stream`);
+        es.addEventListener('message', (e) => { appendMessage(JSON.parse(e.data)); });
+        es.addEventListener('diagnosis_progress', (e) => { updateProgress(JSON.parse(e.data)); });
+        es.addEventListener('diagnosis_complete', (e) => { renderReport(JSON.parse(e.data).result); es.close(); });
+        es.addEventListener('emergency', (e) => { showEmergency(JSON.parse(e.data)); es.close(); });
+        ```
+      operationId: streamEvents
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      responses:
+        "200":
+          description: "SSE事件流"
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "SSE事件流，每行格式: event: {type}\\ndata: {json}\\n\\n"
+        "404":
+          $ref: "#/components/responses/404NotFound"
+
+  # ==========================================================
+  # 诊断管理
+  # ==========================================================
+  /sessions/{session_id}/diagnosis:
+    get:
+      tags: [Diagnosis]
+      summary: "获取诊断报告"
+      description: |
+        获取指定会话的诊断报告。仅当诊断已完成时返回结果。
+
+        **注意：** 此接口返回已生成的诊断报告快照。实时诊断进度请通过SSE获取。
+      operationId: getDiagnosis
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      responses:
+        "200":
+          description: "诊断报告"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosisResponse"
+        "404":
+          $ref: "#/components/responses/404NotFound"
+
+  # ==========================================================
+  # 安全管理
+  # ==========================================================
+  /sessions/{session_id}/safety:
+    get:
+      tags: [Safety]
+      summary: "获取会话安全事件列表"
+      description: "查询指定会话的所有安全相关事件（红旗触发、内容过滤、脱敏记录等）"
+      operationId: listSafetyEvents
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [red_flag, pii_detected, content_filtered, fallback, schema_rejected]
+          description: "按事件分类筛选"
+        - $ref: "#/components/parameters/PaginationLimit"
+        - $ref: "#/components/parameters/PaginationOffset"
+      responses:
+        "200":
+          description: "安全事件列表"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SafetyEventsResponse"
+        "404":
+          $ref: "#/components/responses/404NotFound"
+
+  # ==========================================================
+  # 知识检索
+  # ==========================================================
+  /knowledge:
+    get:
+      tags: [Knowledge]
+      summary: "知识库搜索"
+      description: |
+        独立的知识库搜索接口，不依赖会话上下文。用于用户直接查询医学知识。
+
+        **注意：** 此接口返回原始知识片段，不经过诊断Agent推理。
+      operationId: searchKnowledge
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 500
+          description: "搜索查询词（支持口语，接口内自动术语标准化）"
+          example: "紧张性头痛的诊断标准"
+        - name: source_type
+          in: query
+          schema:
+            type: string
+            enum: [guideline, consensus, textbook, review, case_report]
+          description: "按来源类型筛选"
+        - name: min_authority
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+            default: 0.0
+          description: "最低权威性评分阈值（0.0-1.0）"
+        - $ref: "#/components/parameters/PaginationLimit"
+        - $ref: "#/components/parameters/PaginationOffset"
+      responses:
+        "200":
+          description: "搜索结果"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeSearchResponse"
+        "400":
+          $ref: "#/components/responses/400BadRequest"
