@@ -19,11 +19,15 @@ async def safety_check_node(state: dict) -> dict:
     blocked = False
     next_stage = None
     output = ""
+    pii_detected = False
+    l0_rule_id = None
 
     if content:
         l0_result = run_l0_filter(content, session_id=state.get("session_id", ""))
         red_flag_raised = l0_result.is_emergency
         red_flag_level = l0_result.red_flag_level
+        l0_rule_id = l0_result.rule_id
+        pii_detected = "PII_DETECTED" in (l0_result.matched_keywords or [])
 
         if red_flag_raised:
             safety_checks_passed = False
@@ -51,6 +55,8 @@ async def safety_check_node(state: dict) -> dict:
         "safety_checks_passed": safety_checks_passed,
         "red_flag_raised": red_flag_raised,
         "red_flag_level": red_flag_level,
+        "pii_detected": pii_detected,
+        "l0_rule_id": l0_rule_id,
         "blocked": blocked,
         "next_stage": next_stage,
         "output": output,

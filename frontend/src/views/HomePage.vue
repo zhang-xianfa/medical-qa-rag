@@ -18,6 +18,7 @@ const authStore = useAuthStore()
 
 const showProfile = ref(false)
 const showEmergency = ref(false)
+const sidebarOpen = ref(false)
 const emergencyRedFlags = ref<string[]>([])
 const emergencyGuidance = ref('')
 
@@ -53,6 +54,7 @@ function onNewSession() {
   msgStore.cancelRequest()
   sessionStore.clearCurrentSession()
   msgStore.clearMessages()
+  if (window.innerWidth < 768) sidebarOpen.value = false
 }
 
 /** 发送消息 */
@@ -85,31 +87,41 @@ async function onSendMessage(text: string) {
   }
 }
 
+/** 空状态里的示例问题 */
+function onQuickAsk(text: string) {
+  if (msgStore.isLoading) return
+  onSendMessage(text)
+}
+
 /** 输入框 placeholder */
 const inputPlaceholder = () => {
-  if (msgStore.isDiagnosisDone) return '诊断已完成，可新建会话继续'
-  return '描述您的症状...'
+  if (msgStore.isDiagnosisDone) return '本次问诊已结束，可新建会话继续咨询'
+  return '描述您的症状，例如「头痛三天，还有点发烧」'
 }
 </script>
 
 <template>
-  <div class="flex w-full h-full overflow-hidden bg-white">
-    <!-- 侧边栏 -->
+  <div class="flex w-full h-full overflow-hidden bg-mist">
+    <!-- 侧边栏（移动端为抽屉） -->
     <AppSidebar
+      :open="sidebarOpen"
       @select-session="onSelectSession"
       @delete-session="onDeleteSession"
       @new-session="onNewSession"
       @open-profile="showProfile = true"
+      @close="sidebarOpen = false"
     />
 
     <!-- 主聊天区 -->
-    <main class="flex-1 flex flex-col items-center min-w-0 bg-lavender">
-      <AppHeader />
-      <ChatView />
+    <main class="flex-1 flex flex-col items-center min-w-0 chat-surface">
+      <AppHeader @toggle-menu="sidebarOpen = !sidebarOpen" />
+      <ChatView @quick-ask="onQuickAsk" />
       <ChatInput
         :disabled="msgStore.isDiagnosisDone || msgStore.isLoading"
+        :done="msgStore.isDiagnosisDone"
         :placeholder="inputPlaceholder()"
         @send="onSendMessage"
+        @new-session="onNewSession"
       />
     </main>
 

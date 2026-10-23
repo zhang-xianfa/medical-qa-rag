@@ -12,7 +12,9 @@ import traceback
 
 from llm.real_llm_adapter import RealL2Adapter
 from knowledge.retriever import retrieve_for_symptoms
-from workflow.nodes._shared import msg_role, msg_content, format_knowledge_context
+from workflow.nodes._shared import (
+    msg_role, msg_content, format_knowledge_context, register_question,
+)
 
 logger = logging.getLogger(__name__)
 _adapter = RealL2Adapter()
@@ -24,6 +26,7 @@ async def expert_interview_node(state: dict) -> dict:
     round_count = state.get("round_count", 0)
     max_rounds = state.get("max_rounds", 10)
     messages = state.get("messages", [])
+    asked_questions = list(state.get("asked_questions") or [])
 
     # 安全熔断
     if state.get("red_flag_raised"):
@@ -85,6 +88,7 @@ async def expert_interview_node(state: dict) -> dict:
             messages=formatted_messages,
             round_count=round_count,
             max_rounds=max_rounds,
+            asked_questions=asked_questions,
         )
     except Exception as e:
         logger.error("Expert LLM failed: %s", e)
@@ -116,6 +120,13 @@ async def expert_interview_node(state: dict) -> dict:
     merged_results = old_results
 
     next_action = llm_result.get("next_action", "continue")
+    response_text = llm_result.get("response_text", "")
+    asked_questions, repeated_too_often = register_question(asked_questions, response_text)
+
+    if repeated_too_often and next_action == "continue":
+        logger.info("Expert interview: repeated question, advancing to diagnosis")
+        next_action = "assess"
+
     round_count += 1
 
     # 终止判断
@@ -126,6 +137,7 @@ async def expert_interview_node(state: dict) -> dict:
             "round_count": round_count,
             "max_rounds": max_rounds,
             "current_stage": stage,
+            "asked_questions": asked_questions,
             "search_results": merged_results,
         }
 
@@ -134,7 +146,8 @@ async def expert_interview_node(state: dict) -> dict:
         "round_count": round_count,
         "max_rounds": max_rounds,
         "current_stage": "collect",
-        "messages": [{"role": "assistant", "content": llm_result["response_text"]}],
+        "messages": [{"role": "assistant", "content": response_text}],
         "options": llm_result.get("options", []),
+        "asked_questions": asked_questions,
         "search_results": merged_results,
     }

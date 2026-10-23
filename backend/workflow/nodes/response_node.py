@@ -33,6 +33,15 @@ async def response_node(state: dict) -> dict:
 
     next_stage = "done" # 默认完成
 
+    # 会话已经结束：不再重复生成诊断，避免用户每发一句就重出一遍报告
+    if current_stage == "done":
+        output = (
+            "本次问诊已结束，上面的分析仅供参考，不能替代专业医疗诊断。"
+            "如需继续咨询其他问题，请新建一个会话；如有紧急情况请立即就医或拨打120。"
+        )
+        return {"messages": [{"role": "assistant", "content": output}],
+                "current_stage": "done", "output": output}
+
     if intent in ("greeting",):
         output = "您好！我是智能健康助手。请描述您的症状，我会尽力帮助您分析。请注意，本系统不能替代专业医疗诊断，如有紧急情况请立即就医。"
     elif intent in ("question",) and search_results:

@@ -1,3 +1,12 @@
+import sys
+
+# 日志固定 UTF-8：否则 Windows 下重定向到文件会按 cp936 写，中文全乱码
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import logging
 logging.basicConfig(level=logging.INFO, format='%(name)s | %(levelname)s | %(message)s')
 
@@ -22,10 +31,12 @@ settings = Settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from persistence.session_store import ensure_tables
+    from persistence.audit_store import ensure_audit_tables
     from persistence.database import _get_engine
     from sqlalchemy import text
 
     await ensure_tables()
+    await ensure_audit_tables()
 
     # 确保 users 表存在
     engine = _get_engine()
@@ -74,6 +85,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc: Exception):
+    """兜底异常：统一成前端认识的 {error, code, message} 结构，不暴露堆栈。"""
+    logging.getLogger("main").exception(
+        "Unhandled error on %s %s: %s", request.method, request.url.path, exc
+    )
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=500,
+        content={"error": "INTERNAL_ERROR", "code": 500, "message": "服务暂时不可用，请稍后重试"},
+    )
+
 app.include_router(sessions.router, prefix="/api/v1", tags=["Sessions"])
 app.include_router(messages.router, prefix="/api/v1", tags=["Messages"])
 app.include_router(safety_events.router, prefix="/api/v1", tags=["Safety"])
@@ -84,13 +109,17 @@ app.include_router(profile.router, prefix="/api/v1", tags=["Profile"])
 @app.get("/api/health")
 @app.get("/api/v1/health")
 async def health_check():
+    """真实检查数据库连通性，别返回写死的 healthy"""
+    from persistence.database import check_db_connection
+
+    db_ok = await check_db_connection()
     return {
-        "status": "healthy",
+        "status": "healthy" if db_ok else "degraded",
         "version": "1.0.0",
         "components": {
-            "database": "up",
-            "vector_store": "pgvector",
-            "llm": "up",
+            "database": "up" if db_ok else "down",
+            "vector_store": settings.VECTOR_STORE_BACKEND,
+            "llm": "configured" if settings.DEEPSEEK_API_KEY else "missing_key",
         },
         "uptime_seconds": 0,
     }

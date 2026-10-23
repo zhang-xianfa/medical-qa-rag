@@ -28,3 +28,6 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 *.log
+
+# === 模型权重（92MB，随部署包上传，不进 git） ===
+backend/models/

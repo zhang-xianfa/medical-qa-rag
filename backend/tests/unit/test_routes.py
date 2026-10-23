@@ -9,31 +9,36 @@ from workflow.routes import (
 
 # ── route_by_intent ──────────────────────────
 
-def test_route_by_intent_diagnosis_goes_to_basic_interview():
+@pytest.mark.asyncio
+async def test_route_by_intent_diagnosis_goes_to_basic_interview():
     """医疗意图始终从基础问诊开始"""
     state = {"intent": "diagnosis", "red_flag_raised": False}
-    assert route_by_intent(state) == "basic_interview"
+    assert await route_by_intent(state) == "basic_interview"
 
 
-def test_route_by_intent_with_use_expert_still_starts_at_basic():
+@pytest.mark.asyncio
+async def test_route_by_intent_with_use_expert_still_starts_at_basic():
     """即使 use_expert=True，入口仍然是基础问诊"""
     state = {"intent": "diagnosis", "red_flag_raised": False, "use_expert": True}
-    assert route_by_intent(state) == "basic_interview"
+    assert await route_by_intent(state) == "basic_interview"
 
 
-def test_route_by_intent_greeting_goes_to_response():
+@pytest.mark.asyncio
+async def test_route_by_intent_greeting_goes_to_response():
     state = {"intent": "greeting", "red_flag_raised": False}
-    assert route_by_intent(state) == "response"
+    assert await route_by_intent(state) == "response"
 
 
-def test_route_by_intent_red_flag_always_to_response():
+@pytest.mark.asyncio
+async def test_route_by_intent_red_flag_always_to_response():
     state = {"intent": "diagnosis", "red_flag_raised": True}
-    assert route_by_intent(state) == "response"
+    assert await route_by_intent(state) == "response"
 
 
-def test_route_by_intent_question_goes_to_response():
+@pytest.mark.asyncio
+async def test_route_by_intent_question_goes_to_response():
     state = {"intent": "question", "red_flag_raised": False}
-    assert route_by_intent(state) == "response"
+    assert await route_by_intent(state) == "response"
 
 
 # ── check_basic_interview_complete ───────────
@@ -105,3 +110,20 @@ def test_after_response_done_by_default():
 
 def test_after_response_fallback_goes_to_human_review():
     assert after_response({"fallback_triggered": True}) == "human_review"
+
+
+# ── 会话结束后的路由 ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_route_by_intent_session_done_goes_to_response():
+    """诊断完成后继续发消息，不再重新问诊/重新出诊断"""
+    state = {"intent": "diagnosis", "red_flag_raised": False,
+             "current_stage": "done", "session_status": "done", "round_count": 9}
+    assert await route_by_intent(state) == "response"
+
+
+@pytest.mark.asyncio
+async def test_route_by_intent_terminated_session_goes_to_response():
+    state = {"intent": "diagnosis", "red_flag_raised": False,
+             "session_status": "emergency_terminated", "round_count": 3}
+    assert await route_by_intent(state) == "response"

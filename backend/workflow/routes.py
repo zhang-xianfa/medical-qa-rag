@@ -67,6 +67,18 @@ async def route_by_intent(state: dict) -> str:
     if state.get("red_flag_raised"):
         return "response"
 
+    # 会话已结束：不再重新走问诊，统一交给 response 输出结束语
+    if state.get("current_stage") == "done" or state.get("session_status") in (
+        "done", "emergency_terminated",
+    ):
+        return "response"
+
+    # 已经进入专家阶段：不要每条消息都退回 basic_interview，
+    # 否则轮次会一次 +2、问题重复。
+    basic_max = state.get("scenario_context", {}).get("basic_max_rounds", 5)
+    if _should_use_expert(state) and state.get("round_count", 0) >= basic_max:
+        return "expert_interview"
+
     intent = state.get("intent", "greeting")
 
     try:

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -70,13 +70,13 @@ async function onSave() {
 
         <div class="mb-3">
           <label class="block text-xs text-text-secondary mb-1">昵称</label>
-          <input v-model="nickname" maxlength="50" class="w-full px-2.5 py-2 border-1.5 border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans" />
+          <input v-model="nickname" maxlength="50" class="w-full px-2.5 py-2 border border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans" />
         </div>
 
         <div class="flex gap-2.5 mb-3">
           <div class="flex-1">
             <label class="block text-xs text-text-secondary mb-1">性别</label>
-            <select v-model="gender" class="w-full px-2.5 py-2 border-1.5 border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans">
+            <select v-model="gender" class="w-full px-2.5 py-2 border border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans">
               <option value="">未设置</option>
               <option value="男">男</option>
               <option value="女">女</option>
@@ -84,7 +84,7 @@ async function onSave() {
           </div>
           <div class="flex-1">
             <label class="block text-xs text-text-secondary mb-1">血型</label>
-            <select v-model="bloodType" class="w-full px-2.5 py-2 border-1.5 border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans">
+            <select v-model="bloodType" class="w-full px-2.5 py-2 border border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans">
               <option value="">未设置</option>
               <option>A</option>
               <option>B</option>
@@ -97,22 +97,22 @@ async function onSave() {
         <div class="flex gap-2.5 mb-3">
           <div class="flex-1">
             <label class="block text-xs text-text-secondary mb-1">身高 (cm)</label>
-            <input v-model.number="height" type="number" placeholder="170" min="50" max="250" class="w-full px-2.5 py-2 border-1.5 border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans" />
+            <input v-model.number="height" type="number" placeholder="170" min="50" max="250" class="w-full px-2.5 py-2 border border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans" />
           </div>
           <div class="flex-1">
             <label class="block text-xs text-text-secondary mb-1">体重 (kg)</label>
-            <input v-model.number="weight" type="number" placeholder="65" min="20" max="300" class="w-full px-2.5 py-2 border-1.5 border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans" />
+            <input v-model.number="weight" type="number" placeholder="65" min="20" max="300" class="w-full px-2.5 py-2 border border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans" />
           </div>
         </div>
 
         <div class="mb-3">
           <label class="block text-xs text-text-secondary mb-1">过敏史（逗号分隔）</label>
-          <input v-model="allergies" placeholder="青霉素, 花粉" class="w-full px-2.5 py-2 border-1.5 border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans" />
+          <input v-model="allergies" placeholder="青霉素, 花粉" class="w-full px-2.5 py-2 border border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans" />
         </div>
 
         <div class="mb-5">
           <label class="block text-xs text-text-secondary mb-1">慢性病史</label>
-          <input v-model="chronic" placeholder="高血压, 糖尿病" class="w-full px-2.5 py-2 border-1.5 border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans" />
+          <input v-model="chronic" placeholder="高血压, 糖尿病" class="w-full px-2.5 py-2 border border-lilac-light rounded-sm text-sm outline-none focus:border-wisteria font-sans" />
         </div>
 
         <div class="flex gap-2.5">

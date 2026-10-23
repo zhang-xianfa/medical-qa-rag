@@ -8,8 +8,39 @@
 from __future__ import annotations
 
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+# 已问问题只保留最近 N 条，避免 prompt 无限膨胀
+MAX_ASKED_QUESTIONS = 20
+# 同一个问题最多问几遍，超过则强制推进到下一阶段
+MAX_SAME_QUESTION = 2
+
+_PUNCT_RE = re.compile(r"[\s，。？！?!,.、；;：:\"'“”‘’（）()]+")
+
+
+def normalize_question(text: str) -> str:
+    """把问题归一化后用于比较：去掉空白和标点，避免换个问号就当成新问题"""
+    return _PUNCT_RE.sub("", text or "")
+
+
+def register_question(asked: list[str], text: str) -> tuple[list[str], bool]:
+    """登记本轮问题，并判断是否已经反复问同一个问题。
+
+    Returns:
+        (更新后的已问列表, 是否已经问过太多次)
+    """
+    asked = list(asked or [])
+    key = normalize_question(text)
+    if not key:
+        return asked, False
+
+    repeats = sum(1 for q in asked if normalize_question(q) == key)
+    asked.append(text)
+    if len(asked) > MAX_ASKED_QUESTIONS:
+        asked = asked[-MAX_ASKED_QUESTIONS:]
+    return asked, repeats >= MAX_SAME_QUESTION
 
 
 def msg_role(msg) -> str:

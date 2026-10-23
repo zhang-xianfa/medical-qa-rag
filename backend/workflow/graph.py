@@ -39,6 +39,7 @@ def build_workflow():
     # 安检后分流：医疗意图→基础问诊，否则→直接回复
     workflow.add_conditional_edges("safety_check", route_by_intent, {
         "basic_interview": "basic_interview",
+        "expert_interview": "expert_interview",
         "response": "response",
     })
 

@@ -15,6 +15,7 @@ from persistence.session_store import (
     load_state, save_state, load_messages,
     list_sessions_from_db, delete_session_from_db,
 )
+from persistence.audit_store import get_medical_record
 
 router = APIRouter()
 
@@ -29,8 +30,10 @@ async def create_session(user: dict = Depends(get_current_user)):
         "user_id": user["user_id"],
         "max_rounds": 10,
         "current_stage": "init",
+        "session_status": "active",
         "round_count": 0,
         "red_flag_raised": False,
+        "asked_questions": [],
         "created_at": now.isoformat(),
     })
 
@@ -86,16 +89,17 @@ async def get_session(session_id: uuid.UUID, user: dict = Depends(get_current_us
         raise HTTPException(status_code=404, detail="会话不存在")
 
     _, message_count = await load_messages(sid, limit=1)
+    record = await get_medical_record(sid)
 
     return {
         "id": sid,
         "session_id": sid,
-        "status": state.get("current_stage", "init"),
+        "status": state.get("session_status") or state.get("current_stage", "init"),
         "current_stage": state.get("current_stage", "init"),
         "round_count": state.get("round_count", 0),
         "max_rounds": state.get("max_rounds", 10),
         "red_flag_raised": state.get("red_flag_raised", False),
-        "medical_record_summary": state.get("diagnosis_result"),
+        "medical_record_summary": record,
         "message_count": message_count,
     }
 

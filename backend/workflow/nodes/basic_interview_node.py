@@ -3,7 +3,7 @@ import logging
 import json
 
 from llm.real_llm_adapter import RealL2Adapter
-from workflow.nodes._shared import msg_role, msg_content
+from workflow.nodes._shared import msg_role, msg_content, register_question
 
 logger = logging.getLogger(__name__)
 _adapter = RealL2Adapter()
@@ -16,6 +16,7 @@ async def basic_interview_node(state: dict) -> dict:
     total_max_rounds = state.get("max_rounds", 10)
     basic_max_rounds = state.get("scenario_context", {}).get("basic_max_rounds", 5)
     messages = state.get("messages", [])
+    asked_questions = list(state.get("asked_questions") or [])
 
     # 安全熔断
     if state.get("red_flag_raised"):
@@ -47,6 +48,7 @@ async def basic_interview_node(state: dict) -> dict:
             messages=formatted_messages,
             round_count=round_count,
             max_rounds=basic_max_rounds,
+            asked_questions=asked_questions,
         )
     except Exception as e:
         logger.error("Basic LLM failed: %s", e)
@@ -62,25 +64,36 @@ async def basic_interview_node(state: dict) -> dict:
     logger.info("Basic collected: %s", json.dumps(collected_info, ensure_ascii=False))
 
     next_action = llm_result.get("next_action", "continue")
-    round_count += 1
+    response_text = llm_result.get("response_text", "")
+    asked_questions, repeated_too_often = register_question(asked_questions, response_text)
+
+    # 兜底：同一个问题已经问过两次还继续问 → 说明用户答不上来，跳过这个话题
+    if repeated_too_often and next_action == "continue":
+        logger.info("Basic interview: repeated question, advancing to next stage")
+        next_action = "assess"
 
     # 终止判断（基础阶段使用 basic_max_rounds）
-    if next_action in ("assess", "emergency") or round_count >= basic_max_rounds:
+    # 注意：结束时不再 +1。这一轮后面还要进专家节点，由专家节点统一计数，
+    # 否则同一条用户消息会被基础+专家各记一次，前端看到一轮跳两格。
+    if next_action in ("assess", "emergency") or round_count + 1 >= basic_max_rounds:
         stage = "emergency" if next_action == "emergency" else "diagnose"
         return {
             "collected_info": collected_info,
             "round_count": round_count,
             "max_rounds": total_max_rounds,
             "current_stage": stage,
+            "asked_questions": asked_questions,
             "search_results": state.get("search_results", []),
         }
 
+    round_count += 1
     return {
         "collected_info": collected_info,
         "round_count": round_count,
         "max_rounds": total_max_rounds,
         "current_stage": "collect",
-        "messages": [{"role": "assistant", "content": llm_result["response_text"]}],
+        "messages": [{"role": "assistant", "content": response_text}],
         "options": llm_result.get("options", []),
+        "asked_questions": asked_questions,
         "search_results": state.get("search_results", []),
     }

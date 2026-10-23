@@ -41,6 +41,7 @@ class EmbeddingEncoder:
         self.config = config or load_embedding_config()
         self._cached_dim = self.config.dimensions
         self._bge_model = None
+        self._st_model = None
 
     def _get_bge(self):
         if self._bge_model is None:
@@ -55,6 +56,24 @@ class EmbeddingEncoder:
             except Exception as e:
                 logger.warning("BGE-M3 load failed: %s", e)
         return self._bge_model
+
+    def _get_st(self):
+        """本地 sentence-transformers 兜底（无 embedding API key 时用）。"""
+        if self._st_model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+                # 优先环境变量，其次仓库内 models/ 目录（Docker 镜像与本地都适用）
+                default_path = os.path.join(
+                    os.path.dirname(os.path.dirname(__file__)),
+                    "models", "bge-small-zh-v1.5",
+                )
+                st_path = os.getenv("ST_MODEL_PATH") or default_path
+                self._st_model = SentenceTransformer(st_path)
+                self._cached_dim = self._st_model.get_sentence_embedding_dimension()
+                logger.info("SentenceTransformer loaded: %s dim=%d", st_path, self._cached_dim)
+            except Exception as e:
+                logger.warning("SentenceTransformer load failed: %s", e)
+        return self._st_model
 
     async def encode(self, texts: list[str]) -> list[list[float]]:
         if self.config.api_key:
@@ -73,6 +92,14 @@ class EmbeddingEncoder:
                 return [vec.tolist() for vec in result['dense_vecs']]
             except Exception as e:
                 logger.warning("BGE-M3 failed: %s", e)
+
+        st = self._get_st()
+        if st is not None:
+            try:
+                vecs = st.encode(texts, normalize_embeddings=True)
+                return [v.tolist() for v in vecs]
+            except Exception as e:
+                logger.warning("SentenceTransformer failed: %s", e)
 
         logger.warning(
             "Embedding not available: neither EMBEDDING_API_KEY nor BGE_MODEL_PATH configured. "

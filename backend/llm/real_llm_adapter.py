@@ -412,6 +412,7 @@ class RealL2Adapter:
         messages: list[dict],
         round_count: int,
         max_rounds: int,
+        asked_questions: list[str] | None = None,
     ) -> dict:
 
         template_name = scenario_context.get("prompt_template", "basic_consultation")
@@ -423,6 +424,7 @@ class RealL2Adapter:
             messages=messages,
             round_count=round_count,
             max_rounds=max_rounds,
+            asked_questions=asked_questions or [],
         )
         system_prompt, user_content = _split_system_user(prompt_str)
 

@@ -5,6 +5,7 @@
 # =============================================================================
 
 import logging
+import time
 import uuid
 import json
 from datetime import date, datetime, timezone
@@ -20,6 +21,7 @@ from persistence.database import _get_engine
 from persistence.session_store import (
     load_state, save_state, append_message, load_messages,
 )
+from persistence.audit_store import append_audit, upsert_medical_record
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,42 @@ async def send_message(session_id: uuid.UUID, req: SendMessageRequest, user: dic
     # ---- 第1步：从 DB 加载累积状态 ----
     prev = await load_state(sid)
 
+    # 会话已被安全规则强制终止（红线/急救）：不再继续问诊
+    if prev.get("session_status") == "emergency_terminated":
+        terminated_reply = (
+            "本次会话因触发紧急安全规则已终止，请立即按上述提示就医。"
+            "如需咨询其他问题，请新建一个会话。"
+        )
+        user_msg = {
+            "id": str(uuid.uuid4()),
+            "session_id": session_id,
+            "round_number": prev.get("round_count", 0),
+            "role": "user",
+            "content": req.content,
+            "content_type": req.content_type,
+            "agent_source": None,
+            "token_count": None,
+            "created_at": datetime.now(timezone.utc),
+        }
+        await append_message(sid, user_msg)
+        await append_audit(
+            sid, "terminated_message_blocked", agent_name="safety_check",
+            input_summary={"content": req.content[:200]},
+            output_summary={"action": "blocked"},
+        )
+        return SendMessageResponse(
+            message=MessageResponse(**user_msg),
+            session_status="emergency_terminated",
+            current_stage="done",
+            red_flag_raised=True,
+            round_count=prev.get("round_count", 0),
+            collected_fields_summary=_summarize(prev.get("collected_info", {})),
+            next_action="terminated",
+            response_content=terminated_reply,
+            options=[],
+            scenario=prev.get("current_scenario"),
+        )
+
     # 从 DB 加载完整历史消息（转换为工作流引擎需要的格式）
     all_msgs, _ = await load_messages(sid, limit=200, need_count=False)
     history_messages = []
@@ -58,6 +96,8 @@ async def send_message(session_id: uuid.UUID, req: SendMessageRequest, user: dic
             history_messages.append({"role": role, "content": content})
     # 追加当前用户消息（尚未持久化到 DB；workflow 需要它作为输入）
     history_messages.append({"role": "user", "content": req.content})
+    # 只把最近 16 条喂给 LLM：长会话下 prompt 会线性膨胀，而诊断/问诊并不需要全部历史
+    history_messages = history_messages[-16:]
     
     state = {
         "messages": history_messages,
@@ -76,6 +116,8 @@ async def send_message(session_id: uuid.UUID, req: SendMessageRequest, user: dic
         "current_scenario": prev.get("current_scenario", "general_consultation"),
         "scenario_context": prev.get("scenario_context", {}),
         "options": prev.get("options", []),
+        "asked_questions": prev.get("asked_questions", []),
+        "session_status": prev.get("session_status", "active"),
     }
 
     if not state.get("scenario_context"):
@@ -105,7 +147,45 @@ async def send_message(session_id: uuid.UUID, req: SendMessageRequest, user: dic
                             len(user_profile), user_id[:8])
 
     # ---- 第3步：执行AI工作流 ----
-    result = await graph.ainvoke(state)
+    started_at = time.perf_counter()
+    try:
+        result = await graph.ainvoke(state)
+    except Exception as e:
+        # LLM 超时/接口异常不应该让整轮对话丢掉用户输入，也不能暴露 500 堆栈
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.exception("Workflow failed for session=%s: %s", sid, e)
+        await append_audit(
+            sid, "workflow_error", agent_name="workflow",
+            input_summary={"content": req.content[:200]},
+            latency_ms=latency_ms,
+            error_info={"type": type(e).__name__, "message": str(e)[:500]},
+        )
+        user_msg = {
+            "id": str(uuid.uuid4()),
+            "session_id": session_id,
+            "round_number": prev.get("round_count", 0),
+            "role": "user",
+            "content": req.content,
+            "content_type": req.content_type,
+            "agent_source": None,
+            "token_count": None,
+            "created_at": datetime.now(timezone.utc),
+        }
+        await append_message(sid, user_msg)
+        fallback = "抱歉，AI 服务暂时不可用，请稍后重试。如果症状加重或出现紧急情况，请立即就医或拨打 120。"
+        return SendMessageResponse(
+            message=MessageResponse(**user_msg),
+            session_status=prev.get("session_status", "active"),
+            current_stage=prev.get("current_stage", "init"),
+            red_flag_raised=prev.get("red_flag_raised", False),
+            round_count=prev.get("round_count", 0),
+            collected_fields_summary=_summarize(prev.get("collected_info", {})),
+            next_action="retry",
+            response_content=fallback,
+            options=[],
+            scenario=prev.get("current_scenario"),
+        )
+    latency_ms = int((time.perf_counter() - started_at) * 1000)
 
     # ---- 第4步：持久化用户消息（仅在 workflow 成功后）----
     user_msg = {
@@ -121,12 +201,26 @@ async def send_message(session_id: uuid.UUID, req: SendMessageRequest, user: dic
     }
     await append_message(sid, user_msg)
 
+    # ---- 第5步：计算会话状态（必须落库，否则前端永远显示"进行中"）----
+    red_flag = result.get("red_flag_raised", False)
+    stage = result.get("current_stage", "init")
+    round_count = result.get("round_count", 0)
+    collected = result.get("collected_info", {})
+
+    if red_flag:
+        session_status = "emergency_terminated"
+    elif stage == "done":
+        session_status = "done"
+    else:
+        session_status = "active"
+
     # ---- 保存状态到 DB ----
     await save_state(sid, {
         "collected_info": result.get("collected_info", {}),
-        "round_count": result.get("round_count", 0),
+        "round_count": round_count,
         "max_rounds": result.get("max_rounds", prev.get("max_rounds", 5)),
-        "current_stage": result.get("current_stage", "init"),
+        "current_stage": stage,
+        "session_status": session_status,
         "red_flag_raised": result.get("red_flag_raised", False),
         "safety_checks_passed": result.get("safety_checks_passed", True),
         "search_results": result.get("search_results", []),
@@ -137,13 +231,8 @@ async def send_message(session_id: uuid.UUID, req: SendMessageRequest, user: dic
         "current_scenario": result.get("current_scenario", "general_consultation"),
         "scenario_context": result.get("scenario_context", prev.get("scenario_context", {})),
         "options": result.get("options", []),
+        "asked_questions": result.get("asked_questions", prev.get("asked_questions", [])),
     })
-
-    # ---- 第5步：根据引擎输出决定前端下一步动作 ----
-    red_flag = result.get("red_flag_raised", False)
-    stage = result.get("current_stage", "init")
-    round_count = result.get("round_count", 0)
-    collected = result.get("collected_info", {})
 
     next_action = "continue"              # 默认继续对话
     if red_flag:
@@ -173,9 +262,16 @@ async def send_message(session_id: uuid.UUID, req: SendMessageRequest, user: dic
         }
         await append_message(sid, ai_msg)
 
+    # ---- 第6步：写审计日志 + 结构化病历 ----
+    await _record_turn_audit(
+        sid, req.content, result, assistant_reply, latency_ms, red_flag, stage,
+    )
+    if session_status == "done" and not red_flag and assistant_reply:
+        await _save_medical_record(sid, collected, result, assistant_reply)
+
     return SendMessageResponse(
         message=MessageResponse(**user_msg),
-        session_status="active",
+        session_status=session_status,
         current_stage=stage,
         red_flag_raised=red_flag,
         round_count=round_count,
@@ -290,6 +386,92 @@ def _extract_assistant_reply(messages: list) -> str:
         role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "type", "")
         content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
         if role in ("assistant", "ai"):
+            return content or ""
+    return ""
+
+
+async def _record_turn_audit(sid: str, user_input: str, result: dict,
+                             reply: str, latency_ms: int, red_flag: bool, stage: str) -> None:
+    """每轮写一条审计；红线、PII、诊断各自再补一条带类型的记录。"""
+    # 用脱敏后的用户输入（safety_check 会就地替换 PII），不落原始隐私文本
+    masked_input = _last_user_content(result.get("messages", [])) or user_input
+    agent = {
+        "collect": "interview_node",
+        "diagnose": "diagnosis_agent",
+        "done": "response_node",
+        "emergency": "safety_check",
+    }.get(stage, "workflow")
+
+    await append_audit(
+        sid,
+        event_type="turn",
+        agent_name=agent,
+        input_summary={"content": masked_input[:200]},
+        output_summary={"content": (reply or "")[:200], "stage": stage},
+        latency_ms=latency_ms,
+        red_flag_triggered=red_flag,
+    )
+
+    if red_flag:
+        await append_audit(
+            sid,
+            event_type="red_flag",
+            agent_name="safety_check",
+            input_summary={"content": masked_input[:200]},
+            output_summary={"action": "emergency_interrupted"},
+            latency_ms=latency_ms,
+            red_flag_triggered=True,
+            safety_check={
+                "rule_id": result.get("l0_rule_id"),
+                "level": result.get("red_flag_level"),
+            },
+        )
+
+    if result.get("pii_detected"):
+        await append_audit(
+            sid,
+            event_type="pii_masked",
+            agent_name="pii_detector",
+            input_summary={"action": "masked_before_llm"},
+            latency_ms=latency_ms,
+        )
+
+    if stage == "done" and not red_flag and reply:
+        await append_audit(
+            sid,
+            event_type="diagnosis",
+            agent_name="diagnosis_agent",
+            output_summary={"length": len(reply), "preview": reply[:200]},
+            latency_ms=latency_ms,
+        )
+
+
+async def _save_medical_record(sid: str, collected: dict, result: dict, reply: str) -> None:
+    """诊断完成后落一份结构化病历，供会话详情/病历接口读取。"""
+    patient_info = collected.get("patient_info", {}) if isinstance(collected, dict) else {}
+    core_fields = ("chief_complaint", "symptom_duration", "associated_symptom")
+    missing = [k for k in core_fields if not patient_info.get(k)]
+    record_data = {
+        "patient_info": patient_info,
+        "diagnosis_summary": reply[:4000],
+        "knowledge_sources": [
+            r.get("source", "") for r in result.get("search_results", [])
+            if isinstance(r, dict) and r.get("source")
+        ][:5],
+        "round_count": result.get("round_count", 0),
+    }
+    await upsert_medical_record(
+        sid, record_data,
+        completion_level="complete" if not missing else "partial",
+        missing_core_fields=missing,
+    )
+
+
+def _last_user_content(messages: list) -> str:
+    for msg in reversed(messages):
+        role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "type", "")
+        if role in ("user", "human"):
+            content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
             return content or ""
     return ""
 

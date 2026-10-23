@@ -15,6 +15,12 @@
 - 当前轮次：{{ round_count }}/{{ max_rounds }}
 - 场景：{{ scenario_context.display_name | default("通用健康咨询") }}
 
+## 已经问过的问题（含基础问诊阶段，严禁重复）
+{{ asked_questions | tojson }}
+- 以上问题全部问过，禁止再问相同或近似的问题，必须换一个尚未采集的维度
+- 用户没有正面回答某个问题时，最多追问一次；仍未回答就换下一个维度，不要反复纠缠
+- 用户最新一轮回答即使答非所问，也要从中提取任何有价值的信息写入 extracted_facts（如过敏史、用药、体温等）
+
 ## 知识库参考（基于当前已采集信息检索）
 {{ scenario_context.knowledge_context | default("（暂无相关医学知识参考）") }}
 

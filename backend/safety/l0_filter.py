@@ -64,8 +64,9 @@ GLOBAL_RULES: list[L0Rule] = [
     L0Rule(
         rule_id="OVERDOSE",
         category="中毒/过量服药",
-        patterns=[r"吃了?\d+片药", r"服用了?\d+片", r"喝[了掉]\d+瓶",
-                  r"吃了?一瓶药", r"过量.?服", r"吃[了掉]?.*[药丸片粒颗]"],
+        patterns=[r"吃了?\s*\d+\s*(片|粒|颗|丸)", r"服用了?\s*\d+\s*(片|粒|颗|丸)",
+                  r"喝[了掉]\s*\d+\s*瓶", r"吃了?\s*一瓶药", r"过量.?服",
+                  r"(吃了?|服用了?)\s*(很多|大量|一把|一整瓶|整瓶)\s*(药|片|粒|颗|丸)"],
         red_flag_level="CRITICAL",
         is_blocking=True,
         is_recoverable=False,

@@ -1,0 +1,70 @@
+# 生产部署（2核2G 单机）：docker compose -f docker-compose.prod.yml up -d --build
+# 对外只暴露 8080 端口（nginx），数据库不暴露到公网。
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: medical-db
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: medical_qa
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d medical_qa"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    mem_limit: 400m
+
+  backend:
+    build:
+      context: ./backend
+    container_name: medical-backend
+    env_file:
+      - .env.production
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/medical_qa
+      DATABASE_SYNC_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/medical_qa
+      ST_MODEL_PATH: /app/models/bge-small-zh-v1.5
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # 知识库原始 JSON 只读挂载，供 scripts/load_knowledge.py 入库使用
+      - ./docs:/app/docs:ro
+    healthcheck:
+      # 用 Python 标准库做健康检查，避免为了 curl 去装 apt 包
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    mem_limit: 1100m
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: medical-frontend
+    depends_on:
+      - backend
+    restart: unless-stopped
+    mem_limit: 128m
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: medical-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+    mem_limit: 64m
+
+volumes:
+  pgdata:

@@ -41,6 +41,7 @@ class MedicalQAState(TypedDict):
 
     # --- 问诊选项 ---
     options: List[dict]  # 当前问题的选择题选项
+    asked_questions: List[str]  # 已经问过的问题（用于防止重复提问）
 
     # --- 流程控制 ---
     current_stage: str  # 对话阶段标识
@@ -59,6 +60,13 @@ class MedicalQAState(TypedDict):
     diagnosis_result: Optional[dict]  # 最终诊断评估结果
     red_flag_raised: bool  # 是否识别高危风险
     safety_checks_passed: bool  # 安全校验是否通过
+    red_flag_level: Optional[str]  # CRITICAL / HIGH / MEDIUM
+    pii_detected: bool  # 本轮输入是否命中 PII（用于审计）
+    l0_rule_id: Optional[str]  # 触发的 L0 规则编号
+    blocked: bool  # 是否被合规过滤器拦截
+    next_stage: Optional[str]  # safety_check 指定的下一阶段（如 emergency）
+    output: str  # safety_check 生成的专属安全响应
+    session_status: str  # active / done / emergency_terminated
 
     # --- 会话标识 ---
     session_id: str  # 会话唯一编号

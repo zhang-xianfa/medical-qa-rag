@@ -5,6 +5,10 @@ import asyncio
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent / ".env")
+
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 from knowledge.kb_loader import load_from_dicts
@@ -24,11 +28,17 @@ async def main():
     loaded = load_from_dicts(entries)
     print(f"Loaded {len(loaded)} entries (skipped {len(entries) - len(loaded)} duplicates/invalid)")
 
-    print("Generating embeddings with BGE-M3...")
+    print("Generating embeddings...")
     encoder = EmbeddingEncoder()
     texts = [e["content"][:512] for e in loaded]
     vectors = await encoder.encode(texts)
     print(f"Generated {len(vectors)} vectors, dim={len(vectors[0]) if vectors else 0}")
+
+    if not vectors:
+        # 静默失败最危险：RAG 会变成空检索，但接口照常返回
+        print("ERROR: embedding model unavailable, nothing inserted. "
+              "Check torch/transformers compatibility and ST_MODEL_PATH.")
+        raise SystemExit(1)
 
     store = get_vector_store()
     metadata = [

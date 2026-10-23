@@ -1,13 +1,19 @@
 <script setup lang="ts">
+import { Stethoscope } from 'lucide-vue-next'
 </script>
 
 <template>
-  <div class="msg assistant animate-msg-in flex gap-2 max-w-[82%] self-start">
-    <div class="avatar-icon w-8 h-8 rounded-full bg-wisteria-ghost flex items-center justify-center text-sm flex-shrink-0 self-end">
-      AI
+  <div class="flex gap-2.5 self-start animate-msg-in">
+    <div class="w-8 h-8 rounded-full bg-white border border-eggplant/8 shadow-soft flex items-center justify-center flex-shrink-0 self-end">
+      <Stethoscope class="w-4 h-4 text-wisteria" :stroke-width="1.8" />
     </div>
-    <div class="bubble bg-white shadow-card rounded-md px-3.5 py-2.5 text-sm leading-relaxed italic text-text-secondary flex items-center gap-1">
-      思考中<span class="thinking-dots"></span>
+    <div class="px-4 py-3 rounded-2xl rounded-bl-md bg-white border border-eggplant/8 shadow-soft flex items-center gap-2">
+      <span class="flex gap-1">
+        <span class="w-1.5 h-1.5 rounded-full bg-wisteria/40 animate-bounce [animation-delay:-0.3s]" />
+        <span class="w-1.5 h-1.5 rounded-full bg-wisteria/60 animate-bounce [animation-delay:-0.15s]" />
+        <span class="w-1.5 h-1.5 rounded-full bg-wisteria/80 animate-bounce" />
+      </span>
+      <span class="text-xs text-eggplant/45">正在分析您的情况</span>
     </div>
   </div>
 </template>

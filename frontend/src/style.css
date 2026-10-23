@@ -2,14 +2,33 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── 全局过渡 ── */
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.2s ease;
+/* ── 基础 ── */
+html,
+body {
+  height: 100%;
 }
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
+
+body {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(139, 107, 158, 0.22);
+}
+
+/* 统一的键盘焦点样式，鼠标点击不显示 */
+:focus-visible {
+  outline: 2px solid #8b6b9e;
+  outline-offset: 2px;
+}
+
+/* ── 聊天区背景：很淡的径向光晕，避免大面积纯白 ── */
+.chat-surface {
+  background-color: #faf8fd;
+  background-image:
+    radial-gradient(60rem 32rem at 12% -6%, rgba(139, 107, 158, 0.10), transparent 60%),
+    radial-gradient(48rem 28rem at 92% 4%, rgba(107, 156, 204, 0.10), transparent 62%);
 }
 
 /* ── 消息入场动画 ── */
@@ -17,13 +36,23 @@
   animation: msgIn 0.3s ease-out;
 }
 
-/* ── 自定义滚动条 ── */
-.chat-scroll::-webkit-scrollbar {
-  display: none;
-}
+/* ── 自定义滚动条：细、浅、悬停才明显 ── */
 .chat-scroll {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 107, 158, 0.25) transparent;
+}
+.chat-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.chat-scroll::-webkit-scrollbar-thumb {
+  background: rgba(139, 107, 158, 0.22);
+  border-radius: 999px;
+}
+.chat-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 107, 158, 0.4);
+}
+.chat-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* ── 思考指示器 ── */
@@ -39,9 +68,56 @@
   100% { content: ''; }
 }
 
-/* ── 诊断报告微样式（TailwindCSS 覆盖不到的细节） ── */
+/* ── 输入框自动增高 ── */
+.chat-textarea {
+  resize: none;
+  max-height: 8.5rem;
+}
+
+/* ── 诊断报告 ── */
+.report-card {
+  background: linear-gradient(180deg, #ffffff 0%, #fcfafd 100%);
+}
 .report-card h3 {
   font-family: "STSong", "Songti SC", serif;
+}
+.report-card p {
+  color: #3b3244;
+}
+.report-card .report-section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 1rem 0 0.4rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #4b3a5c;
+}
+.report-card .report-section-title::before {
+  content: '';
+  width: 3px;
+  height: 0.9rem;
+  border-radius: 999px;
+  background: #8b6b9e;
+}
+.report-card .risk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.report-card .risk-low { background: rgba(63, 156, 122, 0.12); color: #2f7d61; }
+.report-card .risk-mid { background: rgba(201, 138, 46, 0.14); color: #9a6720; }
+.report-card .risk-high { background: rgba(194, 85, 116, 0.14); color: #a03a55; }
+.report-card .disclaimer {
+  background: rgba(139, 107, 158, 0.06);
+  border: 1px solid rgba(139, 107, 158, 0.14);
+  border-radius: 10px;
+  padding: 0.65rem 0.8rem;
+  color: #7a6389;
 }
 
 /* ── 选项卡片交互 ── */
@@ -57,4 +133,19 @@
   border-color: #8b6b9e;
   color: #5a3e6b;
   font-weight: 500;
+}
+
+/* ── 侧边栏在移动端作为抽屉滑入 ── */
+.sidebar-drawer {
+  transition: transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

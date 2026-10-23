@@ -21,7 +21,7 @@ import pytest
 class MockL2Adapter:
     _round = 0
 
-    def generate_question(self, collected_facts, scenario_context, round_count, max_rounds, messages=None):
+    async def generate_question(self, collected_facts, scenario_context, round_count, max_rounds, messages=None, asked_questions=None):
         self._round = round_count
         chief = collected_facts.get("patient_info", {}).get("chief_complaint", "")
         location = collected_facts.get("patient_info", {}).get("complaint_location", "")
@@ -67,16 +67,42 @@ class MockLLMAdapter:
         return {"content": "根据描述综合分析：可能的情况包括需要进一步分析的可能性较大。建议密切观察症状变化。", "token_usage": {"total_tokens": 100}}
 
 
+class MockRouter:
+    async def classify(self, user_message):
+        return [("general_consultation", 0.9, "mock")]
+
+
 @pytest.fixture(autouse=True)
 def _mock_llm_adapters(monkeypatch):
     monkeypatch.setattr("workflow.nodes.basic_interview_node._adapter", MockL2Adapter())
     monkeypatch.setattr("workflow.nodes.expert_interview_node._adapter", MockL2Adapter())
     monkeypatch.setattr("workflow.diagnosis_agent._get_adapter", lambda: MockLLMAdapter())
+    # 路由分诊同样不能打真实 LLM，否则单元测试要联网
+    monkeypatch.setattr("workflow.routes._router_llm", MockRouter())
 
 
 from workflow.agent_state_models import AgentState, ConversationStage
 from safety.l0_filter import L0Result, run_l0_filter, register_scene_rules, clear_scene_rules, L0Rule
 from workflow.l1_router import IntentRouter, IntentCategory, RouteResult, ScenarioMatch
+
+
+@pytest.fixture(autouse=True)
+def _reset_async_singletons():
+    """pytest-asyncio 每个用例一个新的 event loop，全局 async 引擎必须跟着重建。
+
+    否则第二个碰数据库的用例会拿到绑定在已关闭 loop 上的 asyncpg 连接池。
+    """
+    import persistence.database as db
+    import knowledge.retriever as retriever_mod
+
+    def _reset():
+        db._engine = None
+        db._async_session_local = None
+        retriever_mod._retriever = None
+
+    _reset()
+    yield
+    _reset()
 
 
 @pytest.fixture
