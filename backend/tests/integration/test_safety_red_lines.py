@@ -52,6 +52,23 @@ async def test_diagnosis_output_contains_mandatory_disclaimer():
 
 
 @pytest.mark.asyncio
+async def test_red_flag_chest_pain_variant_is_blocked():
+    """口语化表述（胸口剧痛/喘不上气）也必须拦截——评测时发现过漏网"""
+    for text in ("胸口剧痛，出冷汗，喘不上气", "感冒了，喘不上气"):
+        state = {"messages": [{"role": "user", "content": text}]}
+        result = await safety_check_node(state)
+        assert result["red_flag_raised"] is True, text
+
+
+@pytest.mark.asyncio
+async def test_mild_chest_discomfort_is_not_blocked():
+    """轻度胸闷不能误拦，否则正常问诊会被打断"""
+    state = {"messages": [{"role": "user", "content": "我胸口有点闷，最近压力大"}]}
+    result = await safety_check_node(state)
+    assert result["red_flag_raised"] is False
+
+
+@pytest.mark.asyncio
 async def test_pii_id_card_is_desensitized_before_processing():
     state = {"messages": [{"role": "user", "content": "我叫张三，身份证号110101199003071234"}]}
     result = await safety_check_node(state)
