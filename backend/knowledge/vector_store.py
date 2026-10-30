@@ -56,6 +56,14 @@ class VectorStore(ABC):
     @abstractmethod
     async def count(self) -> int: ...
 
+    @abstractmethod
+    async def fetch_all(self) -> list[dict]:
+        """取出全部条目（id + metadata），供关键词检索建索引。
+
+        知识库规模在千条量级，全量取出比引入独立全文索引更简单可靠；
+        若后续库容量到十万级，应改为在数据库侧建倒排索引。
+        """
+
 
 
 class InMemoryVectorStore(VectorStore):
@@ -99,6 +107,10 @@ class InMemoryVectorStore(VectorStore):
 
     async def count(self) -> int:
         return len(self._store)
+
+    async def fetch_all(self) -> list[dict]:
+        return [{"id": vid, "score": 0.0, "metadata": meta}
+                for vid, (_, meta) in self._store.items()]
 
 
 # ── PostgreSQL + pgvector 实现 ──────────
@@ -200,6 +212,21 @@ class PGVectorStore(VectorStore):
         async with engine.connect() as conn:
             row = (await conn.execute(text(f"SELECT COUNT(*) FROM {self._table}"))).fetchone()
         return row[0] if row else 0
+
+    async def fetch_all(self) -> list[dict]:
+        from sqlalchemy import text
+        engine = await self._get_engine()
+        async with engine.connect() as conn:
+            rows = await conn.execute(text(
+                f"SELECT id, content, source, source_type, title, "
+                f"authority_score, freshness_score, publish_year FROM {self._table}"
+            ))
+            results = rows.fetchall()
+        return [{"id": r[0], "score": 0.0,
+                 "metadata": {"content": r[1], "source": r[2], "source_type": r[3],
+                              "title": r[4], "authority_score": r[5],
+                              "freshness_score": r[6], "publish_year": r[7]}}
+                for r in results]
 
 
 # ── 工厂 ──────────────────────────────

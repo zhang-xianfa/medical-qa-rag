@@ -66,6 +66,45 @@ async def test_retrieve_filters_by_authority(retriever):
 
 
 @pytest.mark.asyncio
+async def test_keyword_search_bm25_ranks_matching_entry_first(retriever):
+    """关键词路是真 BM25：只有命中查询词的条目会被召回，且排在前面。"""
+    await retriever.store.insert(
+        [[1.0] * 1536, [1.0] * 1536, [1.0] * 1536],
+        [
+            {"content": "高血压患者的降压药物选择", "source": "指南",
+             "source_type": "guideline", "authority_score": 0.9,
+             "freshness_score": 0.9, "knowledge_entry_id": "ke-htn"},
+            {"content": "糖尿病患者饮食控制", "source": "指南",
+             "source_type": "guideline", "authority_score": 0.9,
+             "freshness_score": 0.9, "knowledge_entry_id": "ke-dm"},
+            {"content": "哮喘急性发作处理", "source": "共识",
+             "source_type": "consensus", "authority_score": 0.75,
+             "freshness_score": 0.9, "knowledge_entry_id": "ke-asthma"},
+        ],
+    )
+    results = await retriever.retrieve("高血压 用药", top_k=3)
+    assert results[0].knowledge_entry_id == "ke-htn"
+
+
+@pytest.mark.asyncio
+async def test_authority_affects_ranking(retriever):
+    """同等相关性下，权威度高的条目排前（权威度参与排序，不只是过滤）。"""
+    await retriever.store.insert(
+        [[1.0] * 1536, [1.0] * 1536],
+        [
+            {"content": "偏头痛预防用药建议", "source": "个人博客",
+             "source_type": "case_report", "authority_score": 0.2,
+             "freshness_score": 0.9, "knowledge_entry_id": "ke-low"},
+            {"content": "偏头痛预防用药建议", "source": "中华医学会",
+             "source_type": "guideline", "authority_score": 0.9,
+             "freshness_score": 0.9, "knowledge_entry_id": "ke-high"},
+        ],
+    )
+    results = await retriever.retrieve("偏头痛 用药", top_k=2)
+    assert results[0].knowledge_entry_id == "ke-high"
+
+
+@pytest.mark.asyncio
 async def test_deduplicate_removes_duplicates():
     r1 = SearchResult(content="same", source="s1", source_type="guideline",
                       authority_score=0.9, freshness_score=0.8, relevance_score=0.5,

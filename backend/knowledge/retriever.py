@@ -5,7 +5,10 @@ RAG 检索增强生成 — 混合检索 + 去重 + 权威/时效评分
 from __future__ import annotations
 
 import logging
+import math
 import os
+import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -113,6 +116,59 @@ class EmbeddingEncoder:
         return self._cached_dim
 
 
+# ── BM25 关键词检索 ───────────────────
+
+_CJK_RE = re.compile(r"[一-鿿]")
+_LATIN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _tokenize(text: str) -> list[str]:
+    """中英混合分词：英文/数字按词，中文按 jieba（不可用时退化为二字切片）。"""
+    text = (text or "").lower()
+    tokens = _LATIN_RE.findall(text)
+    try:
+        import jieba
+        tokens += [w for w in jieba.lcut(text) if _CJK_RE.search(w) and len(w) > 1]
+    except ImportError:  # 没装 jieba 时用字符二元组兜底
+        cjk = _CJK_RE.findall(text)
+        tokens += ["".join(cjk[i:i + 2]) for i in range(len(cjk) - 1)]
+    return tokens
+
+
+class BM25Index:
+    """BM25（Okapi）打分，用于知识库的关键词召回。
+
+    知识库规模在千条量级，每次查询直接对全量文档算分即可（O(N×|q|)），
+    不必引入独立全文索引；语料变化时按条目数重建。
+    """
+
+    def __init__(self, docs: list[list[str]], k1: float = 1.5, b: float = 0.75) -> None:
+        self.k1 = k1
+        self.b = b
+        self._tfs = [Counter(d) for d in docs]
+        self._lens = [len(d) for d in docs]
+        self._avgdl = (sum(self._lens) / len(self._lens)) if self._lens else 0.0
+        df: Counter = Counter()
+        for d in docs:
+            df.update(set(d))
+        n = len(docs)
+        # 带平滑的 IDF：词在全部文档中都出现时仍保留正权重
+        self._idf = {t: math.log(1 + (n - c + 0.5) / (c + 0.5)) for t, c in df.items()}
+
+    def scores(self, query_tokens: list[str]) -> list[float]:
+        out: list[float] = []
+        for tf, dl in zip(self._tfs, self._lens):
+            s = 0.0
+            for t in query_tokens:
+                f = tf.get(t, 0)
+                if not f or t not in self._idf:
+                    continue
+                denom = f + self.k1 * (1 - self.b + self.b * dl / (self._avgdl or 1.0))
+                s += self._idf[t] * f * (self.k1 + 1) / denom
+            out.append(s)
+        return out
+
+
 # ── RAG 检索器 ────────────────────────
 
 
@@ -121,6 +177,10 @@ class RAGRetriever:
                  encoder: EmbeddingEncoder | None = None) -> None:
         self.store = store or get_vector_store()
         self.encoder = encoder or EmbeddingEncoder()
+        # 关键词检索的语料与倒排索引缓存：条目数变化时重建
+        self._corpus: list[dict] = []
+        self._corpus_size = -1
+        self._bm25: BM25Index | None = None
 
     async def retrieve(
         self, query: str, top_k: int = 10,
@@ -131,6 +191,7 @@ class RAGRetriever:
         keyword_results = await self._keyword_search(query, top_k)
         merged = self._reciprocal_rank_fusion(vector_results, keyword_results, k=60)
         scored = self._apply_scoring(merged)
+        scored.sort(key=lambda r: r.relevance_score, reverse=True)
         filtered = [
             r for r in scored
             if r.authority_score >= min_authority
@@ -158,19 +219,43 @@ class RAGRetriever:
             return []
         return await self.store.search(vectors[0], top_k=top_k)
 
+    async def _load_corpus(self) -> list[dict]:
+        """取出知识库全量条目；条目数变化时重建 BM25 索引。"""
+        try:
+            size = await self.store.count()
+        except Exception as e:  # 存储不可用 → 关键词路静默跳过，向量路照常
+            logger.warning("Keyword search skipped, store unavailable: %s", e)
+            return []
+        if size == self._corpus_size and self._bm25 is not None:
+            return self._corpus
+        self._corpus = await self.store.fetch_all()
+        self._corpus_size = len(self._corpus)
+        self._bm25 = BM25Index(
+            [_tokenize(e.get("metadata", {}).get("content", "")) for e in self._corpus]
+        )
+        logger.debug("BM25 index built over %d entries", len(self._corpus))
+        return self._corpus
+
     async def _keyword_search(self, query: str, top_k: int) -> list[dict]:
-        results = await self.store.search([0.5] * self.encoder.dimensions, top_k=top_k)
-        keywords = set(query.lower().split())
-        scored = []
-        for r in results:
-            meta = r.get("metadata", {})
-            content = meta.get("content", "").lower()
-            hits = sum(1 for kw in keywords if kw in content)
-            if hits > 0:
-                r["score"] = min(1.0, hits / max(len(keywords), 1))
-                scored.append(r)
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:top_k]
+        query_tokens = _tokenize(query)
+        if not query_tokens:
+            return []
+        corpus = await self._load_corpus()
+        if not corpus or self._bm25 is None:
+            return []
+        scores = self._bm25.scores(query_tokens)
+        best = max(scores, default=0.0)
+        if best <= 0:
+            return []
+        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+        results = []
+        for i in ranked[:top_k]:
+            if scores[i] <= 0:
+                break
+            entry = dict(corpus[i])
+            entry["score"] = scores[i] / best  # 归一到 (0, 1]，与向量分同量级
+            results.append(entry)
+        return results
 
     @staticmethod
     def _reciprocal_rank_fusion(vector_results: list[dict],
@@ -188,20 +273,35 @@ class RAGRetriever:
                 fused[vid] = (r, 1.0 / (k + rank + 1))
         merged = list(fused.values())
         merged.sort(key=lambda x: x[1], reverse=True)
-        return [r for r, score in merged]
+        # 把融合分写回条目，后续评分与排序以它为基准（单路原始分已无意义）
+        return [{**r, "score": score} for r, score in merged]
 
     @staticmethod
     def _apply_scoring(raw: list[dict]) -> list[SearchResult]:
-        results = []
+        """RRF 融合分 × 权威度 × 时效性，归一化后作为 relevance_score。
+
+        权威度与时效都只调权、不过滤：低权威材料仍可能被召回，
+        只是排在后面，避免「知识库太小、过滤后无结果」。
+        """
+        if not raw:
+            return []
+        weighted = []
         for r in raw:
             meta = r.get("metadata", {})
+            authority = float(meta.get("authority_score", 0.5))
+            freshness = float(meta.get("freshness_score", 1.0))
+            base = float(r.get("score", 0.0))
+            weighted.append((r, meta, base * (0.5 + 0.5 * authority) * (0.5 + 0.5 * freshness)))
+        top = max(w for _, _, w in weighted) or 1.0
+        results = []
+        for r, meta, w in weighted:
             results.append(SearchResult(
                 content=meta.get("content", ""),
                 source=meta.get("source", ""),
                 source_type=meta.get("source_type", ""),
-                authority_score=meta.get("authority_score", 0.5),
-                freshness_score=meta.get("freshness_score", 1.0),
-                relevance_score=r.get("score", 0.0),
+                authority_score=float(meta.get("authority_score", 0.5)),
+                freshness_score=float(meta.get("freshness_score", 1.0)),
+                relevance_score=w / top,
                 knowledge_entry_id=r.get("id", ""),
                 title=meta.get("title", ""),
                 publish_year=meta.get("publish_year", 0),
